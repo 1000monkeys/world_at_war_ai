@@ -111,16 +111,23 @@ while (!$all_one_owner) {
 
         $all_one_owner = get_all_one_owner($game_id);
         if ($all_one_owner){
-            echo "WINNER!!!!".$player_id."<br />";
+            $max_turn = get_max_turn($game_id);
+            $country_data = get_country_states($game_id, $max_turn);
+
+            $winner = $country_data[0]["owner"];
+
+            echo "WINNER!!!! = ".$winner."<br />";
             break;
         }
     }
 
-    $max_turn = get_max_turn($game_id);
-    $country_data = get_country_states($game_id, $max_turn);
-    $max_turn += 1;
-    for ($country_id = 0; $country_id < 42; $country_id++) {
-        db_insert_country_state($game_id, $max_turn, $country_id, $country_data[$country_id]["owner"], $country_data[$country_id]["amount_soldiers"]);
+    if (!$all_one_owner) {
+        $max_turn = get_max_turn($game_id);
+        $country_data = get_country_states($game_id, $max_turn);
+        $max_turn += 1;
+        for ($country_id = 0; $country_id < 42; $country_id++) {
+            db_insert_country_state($game_id, $max_turn, $country_id, $country_data[$country_id]["owner"], $country_data[$country_id]["amount_soldiers"]);
+        }
     }
 }
 
