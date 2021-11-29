@@ -71,7 +71,7 @@ $targets = [
 
 $game_id = 1;
 $turn = 1;
-$amount_players =2;
+$amount_players = 2;
 
 empty_db($game_id);
 # Pick countries
@@ -87,8 +87,274 @@ for ($i = 0; $i < 42; $i++) {
     db_pick_country($game_id, $player_id, $result_country_id);
 }
 
-function pick_countries($game_id, $player_id){
+
+echo "Placing soldiers(Start game): <br />";
+for ($i = 0; $i < 126; $i++) {
+    $player_id = $amount_players - ($i % $amount_players) - 1;
+
+    $result_country_id = -1;
+    while ($result_country_id == -1) {
+        $result_country_id = pick_placement($game_id, $player_id);
+    }
+    echo $player_id." picked a placement: ".$result_country_id."<br />";
+
+    $max_turn = get_max_turn($game_id);
+    db_pick_placement($game_id, $max_turn, $result_country_id);
+}
+
+//echo "Placing soldiers(Start turn): <br />";
+//echo "Doing attack/move: <br />";
+$all_one_owner = false;
+while (!$all_one_owner) {
+    for ($player_id = 0; $player_id < $amount_players; $player_id++) {
+        do_move($game_id, $player_id);
+
+        $all_one_owner = get_all_one_owner($game_id);
+        if ($all_one_owner){
+            echo "WINNER!!!!".$player_id."<br />";
+            break;
+        }
+    }
+
+    $max_turn = get_max_turn($game_id);
+    $country_data = get_country_states($game_id, $max_turn);
+    $max_turn += 1;
+    for ($country_id = 0; $country_id < 42; $country_id++) {
+        db_insert_country_state($game_id, $max_turn, $country_id, $country_data[$country_id]["owner"], $country_data[$country_id]["amount_soldiers"]);
+    }
+}
+
+function do_move($game_id, $player_id) {
+    $max_turn = get_max_turn($game_id);
+    $earned_units = get_earned_units($game_id, $player_id);
+
+    while ($earned_units > 0) {
+        $result_country_id = -1;
+        while ($result_country_id == -1) {
+            $result_country_id = pick_placement($game_id, $player_id);
+        }
+        db_pick_placement($game_id, $max_turn, $result_country_id);
+        echo $player_id." picked a placement: ".$result_country_id."<br />";
+        $earned_units -= 1;
+    }
+
+    $current_country_states = get_country_states($game_id, $max_turn);
+    $owned_countries_count = 1;
+    $amount_units = 1;
+    for ($i = 0; $i < 42; $i++) {
+        if ($current_country_states[$i]["owner"] == $player_id) {
+            $owned_countries_count += 1;
+            $amount_units += $current_country_states[$i]["amount_soldiers"];
+        }
+    }
+
+    $amount_move_tries = floor(1 + (($amount_units / 3) / $owned_countries_count));
+    echo $player_id." doing ".$amount_move_tries." move tries.<br />";
+
+    for ($i = 0; $i < $amount_move_tries; $i++) {
+        $possible_moves = array();
+        $country_data = get_country_states($game_id, $max_turn);
+
+        for($country_id = 0; $country_id < 42; $country_id++){            
+            if ($country_data[$country_id]["amount_soldiers"] > 2 && $country_data[$country_id]["owner"] == $player_id) {
+                $targets = get_targets($country_id);
+                foreach ($targets as $target_id) {
+                    if ($country_data[$target_id]["owner"] != $country_data[$country_id]["owner"]) {
+                        $succes_chance = $country_data[$country_id]["amount_soldiers"] / 99 * 100; //TODO
+                        array_push($possible_moves, ["source" => $country_id, "target" => $target_id, "succes_chance" => $succes_chance]);
+                    }
+                }
+            }
+        }
+
+        usort($possible_moves, function($a, $b) {
+            return $b['succes_chance'] <=> $a['succes_chance'];
+        });
+
+        if (count($possible_moves) > 0) {
+            if (count($possible_moves) > 4) {
+                $max = min(4, count($possible_moves));
+            }else{
+                $max = count($possible_moves) - 1;
+            }
+            $move = $possible_moves[random_int(0, $max)];
+
+            $amount_soldiers = random_int(1, $country_data[$move["source"]]["amount_soldiers"] - 2);
+
+            echo "<br />".$player_id." did move: <br />";
+            print_r($move);
+            echo "<br />Source: ";
+            print_r($country_data[$move["source"]]);
+            echo "<br />Target: ";
+            print_r($country_data[$move["target"]]);
+            echo "<br /> with units: ".$amount_soldiers." ";
+            do_attack($game_id, $move["source"], $move["target"], $amount_soldiers);
+            echo "<br /><br />";
+        }
+    }
+}
+
+function do_attack($game_id, $source_id, $target_id, $amount_soldiers){
+    $max_turn = get_max_turn($game_id);
+    $country_data = get_country_states($game_id, $max_turn);
+    $amount_soldiers_target = $country_data[$target_id]["amount_soldiers"];
+
+    $deaths_source = 0;
+    $deaths_target = 0;        
+    while ($amount_soldiers_target > $deaths_target && $amount_soldiers > $deaths_source) {
+        $dice_defender = rand(1, 6);
+        $dice_attacker = rand(1, 5);
+
+        if ($dice_defender > $dice_attacker || $dice_defender == $dice_attacker) {
+            $deaths_source++;
+        }else{
+            $deaths_target++;
+        }
+    }
+
+    if ($amount_soldiers < $deaths_source || $amount_soldiers == $deaths_source) {
+        echo "LOST!<br />";
+    }else{
+        echo "WON!<br />";
+    }
+
+    $max_turn = get_max_turn($game_id);
+    db_do_attmov($game_id, $country_data[$source_id]["owner"], $target_id, $source_id, $max_turn, $amount_soldiers, $deaths_source, $deaths_target);
+}
+
+function get_earned_units($game_id, $player_id){
+    $max_turn = get_max_turn($game_id);
+    $current_country_states = get_country_states($game_id, $max_turn);
+
+    $owned_countries = 0;
+    for ($i = 0; $i < 42; $i++) {
+        if ($current_country_states[$i]["owner"] == $player_id) {
+            $owned_countries++;
+        }
+    }
+    $earned_units = floor($owned_countries / 2);
+
+    $owners = array();
+    for ($i = 0; $i < 8; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $owners[$player_id] == 7) {
+        $earned_units += 2;
+    }
+
+    $owners = array();
+    for ($i = 8; $i < 13; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $current_country_states[0]["owner"] == $player_id) {
+        $earned_units += 2;
+    }
+
+    $owners = array();
+    for ($i = 8; $i < 20; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $current_country_states[8]["owner"] == $player_id) {
+        $earned_units += 4;
+    }
+
+    $owners = array();
+    for ($i = 20; $i < 25; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $current_country_states[20]["owner"] == $player_id) {
+        $earned_units += 3;
+    }
+
+    $owners = array();
+    for ($i = 26; $i < 30; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $current_country_states[26]["owner"] == $player_id) {
+        $earned_units += 3;
+    }
+
+    $owners = array();
+    for ($i = 31; $i < 37; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $current_country_states[31]["owner"] == $player_id) {
+        $earned_units += 3;
+    }
+
+    $owners = array();
+    for ($i = 38; $i < 42; $i++){
+        if (isset($owners[$current_country_states[$i]["owner"]])) {
+            $owners[$current_country_states[$i]["owner"]] += 1;
+        }else{
+            $owners[$current_country_states[$i]["owner"]] = 1;
+        }
+    }
+    if (count($owners) == 1 && isset($owners[$player_id]) && $current_country_states[38]["owner"] == $player_id) {
+        $earned_units += 2;
+    }
+
+    return $earned_units;
+}
+
+function get_all_one_owner($game_id) {
+    global $connection;
+
+    $max_turn = get_max_turn($game_id);
+    $sql = "SELECT COUNT(owner_player_id) FROM country_states WHERE turn=".$max_turn." GROUP BY owner_player_id;";
+    if ($result = $connection->query($sql)) {
+        if ($result->num_rows == 1){
+            return true;
+        }
+    }else{
+        echo "error asd asd asd edghertj";
+        die();
+    }
+    return false;
+}
+
+function pick_placement($game_id, $player_id) {
+    $max_turn = get_max_turn($game_id);
+    $current_country_states = get_country_states($game_id, $max_turn);
+    $countries_worth = get_countries_worth($game_id, $max_turn, $player_id);
     
+    $result_country_id = -1;
+    $lowest = PHP_INT_MAX;
+    for ($country_id = 0; $country_id < 42; $country_id++) {
+        if (($countries_worth[$country_id]["sol"] + $countries_worth[$country_id]["def"]) / 2 < $lowest &&
+        $current_country_states[$country_id]["owner"] == $player_id) {
+            $lowest = ($countries_worth[$country_id]["sol"] + $countries_worth[$country_id]["def"]) / 2;
+            $result_country_id = $country_id;
+        }
+    }
+    return $result_country_id;
+}
+
+function pick_countries($game_id, $player_id){
     $max_turn = get_max_turn($game_id);
     $current_country_states = get_country_states($game_id, $max_turn);
     $country_worth = get_countries_worth($game_id, $max_turn, $player_id);
@@ -119,7 +385,7 @@ function pick_countries($game_id, $player_id){
 
     $block_country_id = block_continent_bonus($game_id, $player_id, $current_country_states);
     if ($block_country_id != -1) {
-        echo "Blocked: ".$block_country_id;
+        echo "Blocked: ".$block_country_id."<br />";
         return $block_country_id;
     }else{
         $result = random_int(0, $total_top_five);
@@ -255,6 +521,67 @@ function get_country_worth($game_id, $turn, $player_id, $country_id, $country_st
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function db_insert_country_state($game_id, $turn, $country_id, $owner, $amount_soldiers){
+    global $connection;
+
+    $sql = "INSERT INTO country_states SET game_id='".$game_id."', turn='".$turn."', country_id='".$country_id."', owner_player_id='".$owner."', amount_soldiers='".$amount_soldiers."';";
+    if ($connection->query($sql)) {
+        return true;
+    }else{
+        echo "error akhfdks fj";
+        die();
+    }
+}
+
+function db_do_attmov($game_id, $player_id, $target_id, $source_id, $turn, $amount_soldiers, $deaths_source, $deaths_target){
+    global $connection;
+
+    $sql = "INSERT INTO moves SET game_id=".$game_id.", player_id=".$player_id.", target_country_id=".$target_id.", origin_country_id=".$source_id.", turn=".$turn.", amount_soldiers=".$amount_soldiers.", deaths_source=".$deaths_source.", deaths_target=".$deaths_target.";";
+    if ($result = $connection->query($sql)) {
+        return true;
+    } else {
+        //echo mysqli_errno($connection);
+        echo " error 2i34u j";
+        die();
+    }
+}
+
+function db_pick_placement($game_id, $turn, $country_id){
+    global $connection;
+
+    $sql = "INSERT INTO reinforcements SET game_id=" . $game_id . ", turn=" . $turn . ", country_id=" . $country_id . ";";
+    if ($result = $connection->query($sql)) {
+        return true;
+    } else {
+        die();
+    }
+}
+
 function get_targets($country_id){
     global $connection;
 
@@ -263,8 +590,6 @@ function get_targets($country_id){
     if($result = $connection->query($sql)){
         while ($row = $result->fetch_assoc()){
             $target_country_id = $row['target_country_id'];
-
-            echo "IS A TARGET";
 
             array_push($targets, $target_country_id);
         }
@@ -282,7 +607,6 @@ function get_country_states($game_id, $turn){
             $country_id = $row["country_id"];
             $owner = $row["owner_player_id"];
             $amount_soldiers = $row["owner_player_id"];
-            
 
             $country_states[$country_id] = ["owner" => $owner, "amount_soldiers" => $amount_soldiers];
         }
@@ -291,6 +615,31 @@ function get_country_states($game_id, $turn){
     for ($country_id = 0; $country_id < 42; $country_id++) {
         if(!isset($country_states[$country_id])){
             $country_states[$country_id] = ["owner" => -1, "amount_soldiers" => -1];
+        }
+    }
+
+    $sql = "SELECT * FROM `reinforcements` WHERE turn=".$turn." AND game_id=".$game_id.";";
+    if ($result = $connection->query($sql)) {
+        while ($row = $result->fetch_assoc()) {
+            $country_states[$row['country_id']]["amount_soldiers"]++;
+        }
+    }
+
+    $sql = "SELECT * FROM moves WHERE game_id=" . $game_id . " AND turn=(SELECT MAX(turn) FROM country_states WHERE game_id=".$game_id.") ORDER BY move_id ASC;";
+    if ($result = $connection->query($sql)) {
+        while ($row = $result->fetch_assoc()){
+            $country_states[$row["origin_country_id"]]["amount_soldiers"] -= $row["amount_soldiers"];
+
+            if ($country_states[$row["origin_country_id"]]["owner"] == $country_states[$row["target_country_id"]]["owner"]) {
+                $country_states[$row["target_country_id"]]["amount_soldiers"] += $row["amount_soldiers"];
+            }else{
+                if ($row["deaths_target"] == $country_states[$row["target_country_id"]]["amount_soldiers"]) {
+                    $country_states[$row["target_country_id"]]["owner"] = $country_states[$row["origin_country_id"]]["owner"];
+                    $country_states[$row["target_country_id"]]["amount_soldiers"] = $row["amount_soldiers"] - $row["deaths_source"];
+                }else{
+                    $country_states[$row["target_country_id"]]["amount_soldiers"] -= $row["deaths_target"];   
+                }
+            }
         }
     }
 
